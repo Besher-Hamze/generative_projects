@@ -1,21 +1,34 @@
 import os
-import streamlit as st
+import requests
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_core.documents import Document
-import requests
-import json
 
-# إعدادات الصفحة
-st.set_page_config(
-    page_title="مولد مشاريع التخرج",
-    page_icon="🎓",
-    layout="wide"
+# تهيئة التطبيق
+app = FastAPI(title="مولد مشاريع التخرج API")
+
+# إعداد CORS للسماح لتطبيق Flutter بالاتصال من أي مكان
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# دالة للاتصال مع Ollama
-def call_ollama(prompt, model="qwen2.5:0.5b"):
+# نمط الطلب لبيانات الـ POST
+class ChatRequest(BaseModel):
+    query: str
+    conversation_history: str = ""
+
+# المتغير العالمي لقاعدة البيانات
+vectordb = None
+
+def call_ollama(prompt, model="qwen2.5:7b"):
     """استدعاء نموذج Ollama"""
     try:
         response = requests.post(
@@ -30,14 +43,10 @@ def call_ollama(prompt, model="qwen2.5:0.5b"):
     except Exception as e:
         return f"خطأ في الاتصال مع Ollama: {str(e)}\nتأكد من تشغيل Ollama بالأمر: ollama serve"
 
-# تحميل وتجهيز البيانات
-@st.cache_resource
 def initialize_vectordb():
     """إنشاء قاعدة البيانات المتجهة"""
-    
-    # قراءة ملف المشاريع
     if not os.path.exists('projects.txt'):
-        st.error("❌ ملف projects.txt غير موجود!")
+        print("❌ ملف projects.txt غير موجود!")
         return None
     
     with open('projects.txt', 'r', encoding='utf-8') as f:
@@ -58,25 +67,36 @@ def initialize_vectordb():
         model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     )
     
-    # إنشاء VectorDB
-    vectordb = Chroma.from_documents(
+    # إنشاء VectorDB أو تحميله
+    db = Chroma.from_documents(
         documents=documents,
         embedding=embeddings,
         persist_directory="./chroma_db"
     )
     
-    return vectordb
+    return db
 
-# البحث عن مشاريع مشابهة
-def search_similar(query, vectordb, k=5):
+@app.on_event("startup")
+def startup_event():
+    """يتم تنفيذ هذه الدالة عند بدء تشغيل الخادم"""
+    global vectordb
+    print("⏳ جاري تحميل قاعدة البيانات...")
+    vectordb = initialize_vectordb()
+    if vectordb:
+        print("✅ النظام جاهز!")
+    else:
+        print("⚠️ فشل تحميل قاعدة البيانات المتجهة، يرجى التحقق من ملف projects.txt")
+
+def search_similar(query, db, k=5):
     """البحث عن مشاريع مشابهة"""
-    results = vectordb.similarity_search(query, k=k)
+    if db is None:
+        return ""
+    results = db.similarity_search(query, k=k)
     context = "\n".join([doc.page_content for doc in results])
     return context
 
-# توليد المشروع
 def generate_project(user_input, context, conversation_history=""):
-    """توليد مشروع جديد مع محادثة"""
+    """توليد مشروع جديد الموجه للنموذج"""
     
     prompt = f"""أنت مساعد ذكي متخصص في توليد أفكار مشاريع تخرج في هندسة المعلوماتية والذكاء الاصطناعي.
 
@@ -109,112 +129,21 @@ def generate_project(user_input, context, conversation_history=""):
 
     return call_ollama(prompt)
 
-# واجهة التطبيق
-def main():
-    
-    # العنوان
-    st.title("🎓 مولد أفكار مشاريع التخرج الذكي")
-    st.markdown("---")
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        st.markdown("""
-        ### 👋 مرحباً!
-        أنا مساعدك الذكي لتوليد أفكار مشاريع التخرج المبتكرة.
-        
-        **يمكنني مساعدتك في:**
-        - توليد أفكار مشاريع جديدة بناءً على اهتماماتك
-        - اقتراح التقنيات والأدوات المناسبة
-        - الإجابة على أسئلتك حول المشاريع
-        - تقديم خطوات التنفيذ التفصيلية
-        """)
-    
-    with col2:
-        st.info("""
-        **💡 أمثلة للأسئلة:**
-        - اقترح مشروع في مجال الصحة
-        - أريد مشروع يستخدم التعلم العميق
-        - ما التقنيات المناسبة لمشروع روبوت؟
-        """)
-    
-    st.markdown("---")
-    
-    # تحميل قاعدة البيانات
-    with st.spinner("⏳ جاري تحميل قاعدة البيانات..."):
-        vectordb = initialize_vectordb()
-    
+@app.post("/api/chat")
+def chat_endpoint(request: ChatRequest):
+    """الاندبوينت الخاصة بالأسئلة والمحادثة ليتم استدعاؤها من Flutter"""
     if vectordb is None:
-        st.stop()
+        raise HTTPException(status_code=500, detail="قاعدة البيانات غير مهيأة بعد.")
     
-    st.success("✅ النظام جاهز!")
+    # البحث عن السياق المشابه
+    context = search_similar(request.query, vectordb, k=5)
     
-    # تهيئة سجل المحادثة
-    if 'messages' not in st.session_state:
-        st.session_state.messages = []
+    # توليد الرد من Ollama
+    response = generate_project(request.query, context, request.conversation_history)
     
-    # عرض المحادثات السابقة
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-    
-    # صندوق الإدخال
-    if prompt := st.chat_input("💬 اكتب طلبك هنا... (مثال: أريد مشروع في مجال الذكاء الاصطناعي)"):
-        
-        # إضافة رسالة المستخدم
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        
-        # توليد الرد
-        with st.chat_message("assistant"):
-            with st.spinner("🤔 جاري التفكير وتوليد الإجابة..."):
-                
-                # البحث عن مشاريع مشابهة
-                context = search_similar(prompt, vectordb, k=5)
-                
-                # بناء سياق المحادثة
-                conversation_history = ""
-                if len(st.session_state.messages) > 1:
-                    recent_messages = st.session_state.messages[-6:-1]
-                    conversation_history = "المحادثة السابقة:\n"
-                    for msg in recent_messages:
-                        role = "الطالب" if msg["role"] == "user" else "المساعد"
-                        conversation_history += f"{role}: {msg['content']}\n"
-                
-                # توليد الرد
-                response = generate_project(prompt, context, conversation_history)
-                
-                st.markdown(response)
-        
-        # حفظ الرد
-        st.session_state.messages.append({"role": "assistant", "content": response})
-    
-    # زر لمسح المحادثة
-    st.sidebar.title("⚙️ الإعدادات")
-    if st.sidebar.button("🗑️ مسح المحادثة"):
-        st.session_state.messages = []
-        st.rerun()
-    
-    # معلومات
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("""
-    ### 📊 الإحصائيات
-    - **عدد المشاريع المحفوظة:** محمّلة ✅
-    - **النموذج المستخدم:** Qwen 2.5 (7B)
-    - **قاعدة البيانات:** ChromaDB
-    """)
-    
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("""
-    ### ℹ️ معلومات
-    تم تطوير هذا النظام باستخدام:
-    - **Ollama** (نموذج محلي)
-    - **LangChain** (إطار العمل)
-    - **ChromaDB** (قاعدة البيانات)
-    - **Streamlit** (الواجهة)
-    """)
+    return {"message": response}
 
 if __name__ == "__main__":
-    main()
+    import uvicorn
+    # تشغيل التطبيق على المنفذ 8000
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
