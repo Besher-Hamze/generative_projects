@@ -285,5 +285,5 @@ def recommend_project(request: RecommendRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    # تشغيل التطبيق على المنفذ 8000
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+    # تشغيل التطبيق في بيئة الإنتاج
+    uvicorn.run("app:app", host="0.0.0.0", port=8000)
