@@ -117,7 +117,14 @@
             align-items: center;
         }
 
-        .model-select {
+        .mode-select-wrapper {
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+
+        .model-select,
+        .mode-select {
             background: var(--surface);
             color: var(--text);
             border: 1px solid var(--border);
@@ -136,26 +143,36 @@
             direction: ltr;  /* أسماء النماذج لاتينية */
             text-align: start;
         }
-        .model-select:hover:not(:disabled) {
+        .mode-select {
+            min-width: 120px;
+            max-width: 150px;
+            direction: rtl;
+        }
+        .model-select:hover:not(:disabled),
+        .mode-select:hover:not(:disabled) {
             border-color: var(--accent);
             color: var(--text);
         }
-        .model-select:focus {
+        .model-select:focus,
+        .mode-select:focus {
             outline: none;
             border-color: var(--accent);
             box-shadow: 0 0 0 3px var(--accent-glow);
         }
-        .model-select:disabled {
+        .model-select:disabled,
+        .mode-select:disabled {
             opacity: 0.5;
             cursor: wait;
         }
-        .model-select option {
+        .model-select option,
+        .mode-select option {
             background: var(--surface);
             color: var(--text);
         }
 
         /* Custom dropdown arrow on the left (since dir=ltr on select inside RTL page) */
-        .model-select-wrapper::after {
+        .model-select-wrapper::after,
+        .mode-select-wrapper::after {
             content: '';
             position: absolute;
             left: 0.75rem;
@@ -168,13 +185,15 @@
             pointer-events: none;
             transition: border-color 0.2s;
         }
-        .model-select-wrapper:hover::after {
+        .model-select-wrapper:hover::after,
+        .mode-select-wrapper:hover::after {
             border-color: var(--accent);
         }
 
         @media (max-width: 640px) {
             .logo-text p { display: none; }
             .model-select { min-width: 110px; max-width: 140px; font-size: 0.78rem; }
+            .mode-select { min-width: 95px; max-width: 120px; font-size: 0.78rem; }
             .clear-btn { font-size: 0.78rem; padding: 0.5rem 0.75rem; }
         }
 
@@ -413,6 +432,12 @@
                 </div>
             </div>
             <div class="header-actions">
+                <div class="mode-select-wrapper">
+                    <select class="mode-select" id="mode-select" title="اختر الوضع">
+                        <option value="chat" selected>وضع المحادثة</option>
+                        <option value="search">وضع البحث</option>
+                    </select>
+                </div>
                 <div class="model-select-wrapper">
                     <select class="model-select" id="model-select" title="اختر النموذج" disabled>
                         <option value="">جاري التحميل...</option>
@@ -470,10 +495,12 @@
         const inputEl = document.getElementById('input');
         const sendBtn = document.getElementById('send-btn');
         const modelSelect = document.getElementById('model-select');
+        const modeSelect = document.getElementById('mode-select');
 
         let conversation = [];
         let isLoading = false;
         let selectedModel = 'qwen2.5:7b'; // سيتم تحديثه من /api/models
+        let selectedMode = 'chat';
 
         const WELCOME_HTML = document.getElementById('welcome').outerHTML;
 
@@ -510,6 +537,19 @@
         modelSelect.addEventListener('change', (e) => {
             selectedModel = e.target.value;
         });
+
+        modeSelect.addEventListener('change', (e) => {
+            selectedMode = e.target.value;
+            updateInputPlaceholder();
+        });
+
+        function updateInputPlaceholder() {
+            if (selectedMode === 'search') {
+                inputEl.placeholder = 'اكتب وصف المشروع للبحث عن أقرب مشاريع موجودة...';
+            } else {
+                inputEl.placeholder = 'اكتب سؤالك هنا...';
+            }
+        }
 
         function autoResize(el) {
             el.style.height = 'auto';
@@ -580,6 +620,25 @@
             if (el) el.remove();
         }
 
+        function formatSearchResults(data) {
+            const results = Array.isArray(data.results) ? data.results : [];
+            if (!results.length) {
+                return 'لم يتم العثور على مشاريع مشابهة.';
+            }
+
+            return results.map((item) => {
+                return [
+                    `#${item.rank || '-'}`,
+                    `اسم المشروع: ${item.project_name || 'غير متوفر'}`,
+                    `الوصف: ${item.description || 'غير متوفر'}`,
+                    `المشرف: ${item.supervisor || 'غير متوفر'}`,
+                    `العام الدراسي: ${item.year || 'غير متوفر'}`,
+                    `التفاصيل الكاملة:`,
+                    `${item.full_text || 'غير متوفر'}`
+                ].join('\n');
+            }).join('\n\n------------------------------\n\n');
+        }
+
         async function sendMessage() {
             const text = inputEl.value.trim();
             if (!text || isLoading) return;
@@ -596,15 +655,25 @@
             addTypingIndicator();
 
             try {
-                const res = await fetch('http://localhost:8000/api/chat', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
+                const endpoint = selectedMode === 'search'
+                    ? 'http://localhost:8000/api/search'
+                    : 'http://localhost:8000/api/chat';
+                const payload = selectedMode === 'search'
+                    ? {
+                        query: text,
+                        k: 3
+                    }
+                    : {
                         query: text,
                         // نرسل كل الرسائل السابقة عدا الحالية (الحالية مرسلة في query)
                         history: conversation.slice(0, -1),
                         model: selectedModel
-                    })
+                    };
+
+                const res = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
                 });
 
                 removeTypingIndicator();
@@ -614,8 +683,11 @@
                     addMessage('assistant', `⚠️ ${err.detail || 'فشل الاتصال بالخادم'}`, true);
                 } else {
                     const data = await res.json();
-                    addMessage('assistant', data.message);
-                    conversation.push({ role: 'assistant', content: data.message });
+                    const assistantText = selectedMode === 'search'
+                        ? formatSearchResults(data)
+                        : data.message;
+                    addMessage('assistant', assistantText);
+                    conversation.push({ role: 'assistant', content: assistantText });
                 }
             } catch (e) {
                 removeTypingIndicator();
@@ -628,6 +700,7 @@
         }
 
         inputEl.focus();
+        updateInputPlaceholder();
         loadModels();
     </script>
 </body>

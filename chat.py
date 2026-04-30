@@ -129,6 +129,44 @@ def search_similar(query: str, db, k: int = TOP_K) -> str:
     return "\n\n---\n\n".join(doc.page_content for doc in results)
 
 
+def search_projects(query: str, db, k: int = 3) -> list:
+    """إرجاع أقرب المشاريع مع تفاصيلها الكاملة بشكل منظم."""
+    if db is None:
+        return []
+
+    try:
+        rows = db.similarity_search_with_score(query, k=k)
+        docs_with_scores = rows
+    except Exception:
+        docs = db.similarity_search(query, k=k)
+        docs_with_scores = [(doc, None) for doc in docs]
+
+    projects = []
+    for idx, (doc, score) in enumerate(docs_with_scores, start=1):
+        metadata = doc.metadata or {}
+        projects.append(
+            {
+                "rank": idx,
+                "project_name": metadata.get("project_name", ""),
+                "description": _extract_field_from_content(doc.page_content, "وصف المشروع:"),
+                "supervisor": metadata.get("supervisor", ""),
+                "year": metadata.get("year", ""),
+                "full_text": doc.page_content,
+                "score": score,
+            }
+        )
+
+    return projects
+
+
+def _extract_field_from_content(content: str, key: str) -> str:
+    """استخراج قيمة سطر يبدأ بمفتاح معين من نص الـ document."""
+    for line in content.splitlines():
+        if line.startswith(key):
+            return line.replace(key, "", 1).strip()
+    return ""
+
+
 def format_history(history: list, max_turns: int = MAX_HISTORY_TURNS) -> str:
     """تحويل آخر عدة أدوار من المحادثة إلى نص يمكن إرساله مع الـ prompt."""
     if not history:

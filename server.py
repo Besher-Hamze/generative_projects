@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from chat import (
     initialize_vectordb,
     search_similar,
+    search_projects,
     generate_response,
     format_history,
     DEFAULT_MODEL,
@@ -51,6 +52,11 @@ class ChatRequest(BaseModel):
     query: str
     history: List[Message] = []
     model: str = DEFAULT_MODEL
+
+
+class SearchRequest(BaseModel):
+    query: str
+    k: int = 3
 
 
 # ==================== أحداث دورة الحياة ====================
@@ -97,6 +103,20 @@ def chat(request: ChatRequest):
     )
 
     return {"message": response}
+
+
+@app.post("/api/search")
+def search(request: SearchRequest):
+    """وضع البحث: إرجاع أقرب المشاريع الموجودة مع تفاصيلها."""
+    if vectordb is None:
+        raise HTTPException(
+            status_code=500,
+            detail="قاعدة البيانات المتجهة غير مهيأة بعد."
+        )
+
+    k = max(1, min(request.k, 10))
+    results = search_projects(request.query, vectordb, k=k)
+    return {"query": request.query, "count": len(results), "results": results}
 
 
 @app.get("/api/health")
